@@ -275,6 +275,100 @@ describe('Pedido: cálculo', () => {
     assert.equal(resumo.total, 96.5);
   });
 
+  test('arredonda para baixo o teto quando ele tem fração de centavo', () => {
+    const casos = [
+      { subtotal: 0.03, teto: 0 },
+      { subtotal: 0.05, teto: 0.01 },
+      { subtotal: 0.1, teto: 0.03 },
+    ];
+
+    casos.forEach(({ subtotal, teto }) => {
+      const pedido = novoPedido();
+      const fixo = cupom({ codigo: 'FIXO', tipo: 'fixo', valor: subtotal });
+      assert.equal(
+        pedido.adicionarItem({ ...caneca, preco: subtotal }, 1).ok,
+        true,
+      );
+      assert.equal(pedido.aplicarCupom(fixo).ok, true);
+
+      const resumo = pedido.resumo().dados;
+      assert.equal(resumo.subtotal, subtotal);
+      assert.equal(resumo.descontos, teto, `subtotal: ${subtotal}`);
+    });
+  });
+
+  test('limita o desconto combinado de cupons sobre um subtotal pequeno', () => {
+    const pedido = novoPedido();
+    const produto = { ...caneca, preco: 0.15 };
+    const percentual = cupom({
+      codigo: 'VINTE',
+      tipo: 'percentual',
+      valor: 20,
+    });
+    const fixo = cupom({ codigo: 'FIXO', tipo: 'fixo', valor: 0.03 });
+    assert.equal(pedido.adicionarItem(produto, 1).ok, true);
+    assert.equal(pedido.aplicarCupom(percentual).ok, true);
+    assert.equal(pedido.resumo().dados.descontos, 0.03);
+    assert.equal(pedido.aplicarCupom(fixo).ok, true);
+    assert.equal(pedido.resumo().dados.descontos, 0.04);
+  });
+
+  test('soma as comissões apuradas por vendedor e concilia os repasses', () => {
+    const pedido = novoPedido();
+    const produtos = [
+      { ...caneca, preco: 0.02 },
+      { ...caneca, id: 5, preco: 0.03 },
+      { ...caneca, id: 6, preco: 0.05, vendedor: livrariaSol },
+    ];
+    produtos.forEach((produto) => {
+      assert.equal(pedido.adicionarItem(produto, 1).ok, true);
+    });
+    assert.equal(pedido.confirmar(criarEstoque(...produtos)).ok, true);
+
+    const { comissao, repasses } = pedido.resumo().dados;
+    assert.deepEqual(repasses, [
+      { vendedor: 'TechBahia', bruto: 0.05, comissao: 0.01, repasse: 0.04 },
+      { vendedor: 'Livraria Sol', bruto: 0.05, comissao: 0.01, repasse: 0.04 },
+    ]);
+    repasses.forEach(({ bruto, comissao, repasse }) => {
+      assert.equal(
+        Math.round(bruto * 100),
+        Math.round(comissao * 100) + Math.round(repasse * 100),
+      );
+    });
+    assert.equal(
+      Math.round(comissao * 100),
+      repasses.reduce(
+        (soma, vendedor) => soma + Math.round(vendedor.comissao * 100),
+        0,
+      ),
+    );
+  });
+
+  test('arredonda R$ 4,015 de comissão para R$ 4,02', () => {
+    const pedido = novoPedido();
+    const produto = { ...caneca, preco: 40.15 };
+    assert.equal(pedido.adicionarItem(produto, 1).ok, true);
+    assert.equal(pedido.confirmar(criarEstoque(produto)).ok, true);
+
+    const { comissao, repasses } = pedido.resumo().dados;
+    assert.equal(comissao, 4.02);
+    assert.deepEqual(repasses, [
+      { vendedor: 'TechBahia', bruto: 40.15, comissao: 4.02, repasse: 36.13 },
+    ]);
+  });
+
+  test('desconta a comissão arredondada do bruto de R$ 0,05 no repasse', () => {
+    const pedido = novoPedido();
+    const produto = { ...caneca, preco: 0.05 };
+    assert.equal(pedido.adicionarItem(produto, 1).ok, true);
+    assert.equal(pedido.confirmar(criarEstoque(produto)).ok, true);
+
+    assert.deepEqual(pedido.resumo().dados.repasses, [
+      { vendedor: 'TechBahia', bruto: 0.05, comissao: 0.01, repasse: 0.04 },
+    ]);
+  });
+
   test('frete é grátis a partir de R$ 300,00 já com descontos', () => {
     const pedido = novoPedido();
     pedido.adicionarItem(notebook, 1);
