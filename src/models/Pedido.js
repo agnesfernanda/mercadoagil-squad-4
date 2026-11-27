@@ -7,7 +7,11 @@ import {
   TETO_DESCONTO_PERCENTUAL,
   TRIBUTOS_POR_CATEGORIA,
 } from '../config/regras.js';
-import { arredondarDinheiro, formatarReais } from '../utils/dinheiro.js';
+import {
+  arredondarDinheiro,
+  formatarReais,
+  paraCentavos,
+} from '../utils/dinheiro.js';
 import { sucesso, falha } from '../utils/extra.js';
 import { Cliente } from './Cliente.js';
 import { CupomDesconto } from './CupomDesconto.js';
@@ -412,9 +416,15 @@ export class Pedido {
       );
 
     // 3) Teto: os descontos sobre os itens nunca passam de 30% do subtotal
-    const teto = arredondarDinheiro(subtotal * TETO_DESCONTO_PERCENTUAL);
-    const descontos = arredondarDinheiro(Math.min(subtotal - aposFixos, teto));
-    const valorComDescontos = arredondarDinheiro(subtotal - descontos);
+    const subtotalCentavos = paraCentavos(subtotal);
+    const percentualTeto = Math.round(TETO_DESCONTO_PERCENTUAL * 100);
+    const tetoCentavos = Math.floor((subtotalCentavos * percentualTeto) / 100);
+    const descontoCentavos = Math.min(
+      subtotalCentavos - paraCentavos(aposFixos),
+      tetoCentavos,
+    );
+    const descontos = descontoCentavos / 100;
+    const valorComDescontos = (subtotalCentavos - descontoCentavos) / 100;
 
     // 4) Frete: um só por pedido, grátis com cupom de frete ou a partir de R$ 300,00
     const temCupomFrete = this.#cupons.some((cupom) => cupom.tipo === 'frete');
@@ -432,13 +442,22 @@ export class Pedido {
 
     // Tributos e comissão são calculados sobre o valor dos itens, antes dos descontos
     const linhas = this.#itens.map((item) => {
-      const { produto } = item;
+      const { produto, precoUnitario, quantidade } = item;
       const valorBruto = valorDoItem(item);
+      const precoCentavos = paraCentavos(precoUnitario);
+      const percentualComissao = Math.round(
+        COMISSOES_POR_CATEGORIA[produto.categoria] * 100,
+      );
+      // Preserva preços numéricos legados com frações de centavo.
+      const brutoCentavos =
+        precoCentavos / 100 === precoUnitario
+          ? precoCentavos * quantidade
+          : valorBruto * 100;
       return {
         vendedor: produto.vendedor,
         valorBruto,
         tributo: valorBruto * TRIBUTOS_POR_CATEGORIA[produto.categoria],
-        comissao: valorBruto * COMISSOES_POR_CATEGORIA[produto.categoria],
+        comissaoEmCentesimosDeCentavo: brutoCentavos * percentualComissao,
       };
     });
 
@@ -447,9 +466,6 @@ export class Pedido {
     const tributos = arredondarDinheiro(
       soma(linhas.map((linha) => linha.tributo)),
     );
-    const comissao = arredondarDinheiro(
-      soma(linhas.map((linha) => linha.comissao)),
-    );
 
     // Repasse por vendedor: valor bruto dos itens dele menos a comissão desses itens
     const porVendedor = linhas.reduce((acumulado, linha) => {
@@ -457,24 +473,34 @@ export class Pedido {
         vendedor: linha.vendedor.nomeLoja,
         vendedorCnpj: linha.vendedor.cnpj,
         bruto: 0,
-        comissao: 0,
+        comissaoEmCentesimosDeCentavo: 0,
       };
       return {
         ...acumulado,
         [linha.vendedor.cnpj]: {
           ...atual,
           bruto: atual.bruto + linha.valorBruto,
-          comissao: atual.comissao + linha.comissao,
+          comissaoEmCentesimosDeCentavo:
+            atual.comissaoEmCentesimosDeCentavo +
+            linha.comissaoEmCentesimosDeCentavo,
         },
       };
     }, {});
 
-    const repasses = Object.values(porVendedor).map((linha) => ({
+    const porVendedorEmCentavos = Object.values(porVendedor).map((linha) => ({
       vendedor: linha.vendedor,
       vendedorCnpj: linha.vendedorCnpj,
-      bruto: arredondarDinheiro(linha.bruto),
-      comissao: arredondarDinheiro(linha.comissao),
-      repasse: arredondarDinheiro(linha.bruto - linha.comissao),
+      bruto: paraCentavos(linha.bruto),
+      comissao: Math.round(linha.comissaoEmCentesimosDeCentavo / 100),
+    }));
+    const comissao =
+      soma(porVendedorEmCentavos.map((linha) => linha.comissao)) / 100;
+    const repasses = porVendedorEmCentavos.map((linha) => ({
+      vendedor: linha.vendedor,
+      vendedorCnpj: linha.vendedorCnpj,
+      bruto: linha.bruto / 100,
+      comissao: linha.comissao / 100,
+      repasse: (linha.bruto - linha.comissao) / 100,
     }));
 
     return { subtotal, descontos, frete, tributos, total, comissao, repasses };
