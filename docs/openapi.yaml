@@ -1,0 +1,15 @@
+openapi: 3.0.3
+
+info:
+  title: MercadoÁgil 2.0 - API de Pedidos
+  description: API REST de gerenciamento de pedidos de marketplace.
+  version: 2.0.0
+
+paths: {}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
